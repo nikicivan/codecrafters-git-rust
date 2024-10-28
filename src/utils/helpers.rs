@@ -1,22 +1,24 @@
 use anyhow::{anyhow, Context, Result};
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
-pub fn get_object_folder_path(sha1: &str) -> String {
-    format!(".git/objects/{}", &sha1[..2])
+pub fn get_object_folder_path(sha1: &str) -> PathBuf {
+    PathBuf::from(format!(".git/objects/{}", &sha1[..2]))
 }
 
-pub fn get_object_file_path(sha1: &str) -> String {
-    format!("{}/{}", get_object_folder_path(sha1), &sha1[2..])
+pub fn get_object_file_path(sha1: &str) -> PathBuf {
+    let mut path = get_object_folder_path(sha1);
+    path.push(&sha1[2..]);
+    path
 }
 
-pub fn into_bytes(input: [u32; 5]) -> [u8; 20] {
-    input
-        .into_iter()
-        .flat_map(|val| val.to_be_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .expect("Sha1 digest is always 20 bytes")
-}
+// pub fn into_bytes(input: [u32; 5]) -> [u8; 20] {
+//     input
+//         .into_iter()
+//         .flat_map(|val| val.to_be_bytes())
+//         .collect::<Vec<_>>()
+//         .try_into()
+//         .expect("Sha1 digest is always 20 bytes")
+// }
 
 pub fn from_utf8_with_context(input: Vec<u8>) -> Result<String> {
     String::from_utf8(input).map_err(|err| {
@@ -41,4 +43,13 @@ where
     Output::Err: std::error::Error + Send + Sync + 'static,
 {
     from_utf8_with_context(input).and_then(|str| parse_with_context(&str))
+}
+
+pub fn into_single_bytes(value: [u32; 5]) -> Result<[u8; 20]> {
+    Ok(value
+        .into_iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|_| anyhow!("unreachable: [u32; 5] couldn't be converted to [u8; 20]"))?)
 }

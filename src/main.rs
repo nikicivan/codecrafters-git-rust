@@ -1,12 +1,9 @@
-use anyhow::{Context, Result};
-use git::{git_blob::Blob, git_object_trait::GitObject, git_tree::Tree};
-#[allow(unused_imports)]
+use anyhow::{anyhow, Context, Result};
+use git::{any_git_object::AnyGitObject, file_tree::FileTree, git_object_trait::GitObject};
 use std::{
     env, fs,
     io::{stdout, Write},
-    path::Path,
 };
-use utils::helpers::get_object_file_path;
 
 mod git;
 mod utils;
@@ -18,42 +15,47 @@ fn main() -> Result<()> {
 
     match args[1].as_str() {
         "init" => {
-            fs::create_dir(".git").unwrap();
-            fs::create_dir(".git/objects").unwrap();
-            fs::create_dir(".git/refs").unwrap();
-            fs::write(".git/HEAD", "ref: refs/heads/main\n").unwrap();
+            fs::create_dir(".git")?;
+            fs::create_dir(".git/objects")?;
+            fs::create_dir(".git/refs")?;
+            fs::write(".git/HEAD", "ref: refs/heads/main\n")?;
             println!("Initialized git directory")
         }
         "cat-file" => {
             assert_eq!(args[2], "-p");
             let blob_sha = &args[3];
 
-            let blob_path = get_object_file_path(&blob_sha);
-
-            let raw_content =
-                fs::read(&blob_path).with_context(|| format!("failed to read file {blob_path}"))?;
-
-            let blob: Blob = Blob::decode(raw_content)
-                .with_context(|| format!("failed to parse object file content for {blob_path}"))?;
-
-            stdout
-                .write_all(Blob::get_first_index(&blob))
-                .with_context(|| {
-                    format!("failed to write object file content to stdout for {blob_path}")
+            let blob = AnyGitObject::read(blob_sha)
+                .with_context(|| format!("failed to read object file content for {blob_sha}"))?
+                .try_as_blob()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "failed to parse object file content for {blob_sha}: expected it to be a blob"
+                    )
                 })?;
+
+            stdout.write_all(blob.content()).with_context(|| {
+                format!("failed to write object file content to stdout for {blob_sha}")
+            })?;
         }
         "hash-object" => {
             assert_eq!(args[2], "-w");
             let path = &args[3];
 
-            let content =
-                fs::read(path).with_context(|| format!("failed to read file at {path}"))?;
-            let blob = Blob(content);
-
-            let sha = hex::encode(blob.sha1());
+            let blob = AnyGitObject::generate(path)
+                .with_context(|| format!("failed to generate object file from {path}"))?
+                .try_as_blob()
+                .ok_or_else(|| {
+                    anyhow!("failed to generate object file from {path}: expected it to be a blob")
+                })?;
 
             blob.write()
                 .with_context(|| format!("failed to write object file for blob from {path}"))?;
+
+            let sha = hex::encode(
+                blob.sha1()
+                    .with_context(|| "failed to generate blob hash")?,
+            );
 
             println!("{sha}");
         }
@@ -61,16 +63,37 @@ fn main() -> Result<()> {
             assert_eq!(args[2], "--name-only");
 
             let tree_sha = &args[3];
-            let tree_path = get_object_file_path(&tree_sha);
-            let raw_content = fs::read(&tree_path)
-                .with_context(|| format!("failed to read object file at {tree_path}"))?;
 
-            let tree: Tree = Tree::decode(raw_content)
-                .with_context(|| format!("failed to parse object file content for {tree_path}"))?;
+            let tree = AnyGitObject::read(&tree_sha)
+                .with_context(|| format!("failed to parse object file content for {tree_sha}"))?
+                .try_as_tree()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "failed to parse object file content for {tree_sha}: expected it to be a tree"
+                    )
+                })?;
 
-            for entry in tree.0 {
+            for entry in tree.entries() {
                 println!("{}", entry.name);
             }
+        }
+        "write-tree" => {
+            let file_tree = FileTree::new(
+                env::current_dir().with_context(|| "failed to get current directory")?,
+            )
+            .with_context(|| "failed to create file tree")?;
+
+            #[cfg(debug_assertions)]
+            eprintln!("{:#?}", file_tree);
+
+            let tree_object = file_tree.write()?;
+            let sha = hex::encode(
+                tree_object
+                    .sha1()
+                    .with_context(|| "failed to generate tree hash")?,
+            );
+
+            println!("{sha}");
         }
         command => println!("unknown command: {}", command),
     }
