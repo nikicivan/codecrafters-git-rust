@@ -1,13 +1,15 @@
-use anyhow::{anyhow, Context, Result};
-use blob::blob::Blob;
+use anyhow::{Context, Result};
+use git::{git_blob::Blob, git_object_trait::GitObject, git_tree::Tree};
 #[allow(unused_imports)]
 use std::{
     env, fs,
     io::{stdout, Write},
     path::Path,
 };
+use utils::helpers::get_object_file_path;
 
-mod blob;
+mod git;
+mod utils;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -24,18 +26,18 @@ fn main() -> Result<()> {
         }
         "cat-file" => {
             assert_eq!(args[2], "-p");
-            let blog_sha = &args[3];
-            let blob_path = format!(".git/objects/{}/{}", &blog_sha[..2], &blog_sha[2..]);
+            let blob_sha = &args[3];
+
+            let blob_path = get_object_file_path(&blob_sha);
 
             let raw_content =
                 fs::read(&blob_path).with_context(|| format!("failed to read file {blob_path}"))?;
 
-            let blob: Blob = raw_content
-                .try_into()
-                .with_context(|| format!("failed to parse object for {blob_path}"))?;
+            let blob: Blob = Blob::decode(raw_content)
+                .with_context(|| format!("failed to parse object file content for {blob_path}"))?;
 
             stdout
-                .write_all(blob.get_blob_first_index())
+                .write_all(Blob::get_first_index(&blob))
                 .with_context(|| {
                     format!("failed to write object file content to stdout for {blob_path}")
                 })?;
@@ -47,30 +49,28 @@ fn main() -> Result<()> {
             let content =
                 fs::read(path).with_context(|| format!("failed to read file at {path}"))?;
             let blob = Blob(content);
-            let sha1 = blob.sha1();
 
-            println!("{}", sha1);
+            let sha = hex::encode(blob.sha1());
 
-            let object_folder = format!(".git/objects/{}", &sha1[..2]);
-            let object_path = format!("{}/{}", &object_folder, &sha1[2..]);
+            blob.write()
+                .with_context(|| format!("failed to write object file for blob from {path}"))?;
 
-            // println!("Object PATH {}", object_path);
+            println!("{sha}");
+        }
+        "ls-tree" => {
+            assert_eq!(args[2], "--name-only");
 
-            if !Path::new(&object_folder).exists() {
-                fs::create_dir(&object_folder).with_context(|| {
-                    format!("failed to create object folder at {object_folder} for {path}")
-                })?;
-            } else if !fs::metadata(&object_folder)?.is_dir() {
-                return Err(anyhow!("object folder is not a directory: {object_folder}"));
+            let tree_sha = &args[3];
+            let tree_path = get_object_file_path(&tree_sha);
+            let raw_content = fs::read(&tree_path)
+                .with_context(|| format!("failed to read object file at {tree_path}"))?;
+
+            let tree: Tree = Tree::decode(raw_content)
+                .with_context(|| format!("failed to parse object file content for {tree_path}"))?;
+
+            for entry in tree.0 {
+                println!("{}", entry.name);
             }
-
-            let encoded = blob
-                .encode()
-                .with_context(|| format!("failed to encode object file for {path}"))?;
-
-            fs::write(&object_path, encoded).with_context(|| {
-                format!("failed to write object file at {object_path} for {path}")
-            })?;
         }
         command => println!("unknown command: {}", command),
     }
