@@ -1,14 +1,13 @@
 use anyhow::{anyhow, Context, Result};
-use flate2::write::ZlibDecoder;
-#[allow(unused_imports)]
-use std::env;
+use blob::blob::Blob;
 #[allow(unused_imports)]
 use std::{
-    fs,
+    env, fs,
     io::{stdout, Write},
+    path::Path,
 };
 
-static OBJECT_HEADER_PREFIX: &str = "blob ";
+mod blob;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -31,41 +30,46 @@ fn main() -> Result<()> {
             let raw_content =
                 fs::read(&blob_path).with_context(|| format!("failed to read file {blob_path}"))?;
 
-            let mut decoder = ZlibDecoder::new(vec![]);
-            decoder.write_all(&raw_content).with_context(|| {
-                format!("failed to finish zlib decoder for object file at {blob_path}")
-            })?;
-
-            let decompressed_content = decoder.finish().with_context(|| {
-                format!("failed to finish zlib decoder for object file at {blob_path}")
-            })?;
-
-            let [header, content]: [&[_]; 2] = decompressed_content
-                .splitn(2, |b| b == &b'\0')
-                .collect::<Vec<_>>()
+            let blob: Blob = raw_content
                 .try_into()
-                .map_err(|_| {
-                    anyhow!(
-                        "invalid object file at {blob_path}: expected it to contain {:?}",
-                        "\0"
-                    )
+                .with_context(|| format!("failed to parse object for {blob_path}"))?;
+
+            stdout
+                .write_all(blob.get_blob_first_index())
+                .with_context(|| {
+                    format!("failed to write object file content to stdout for {blob_path}")
                 })?;
+        }
+        "hash-object" => {
+            assert_eq!(args[2], "-w");
+            let path = &args[3];
 
-            assert_eq!(
-                &header[..OBJECT_HEADER_PREFIX.len()],
-                OBJECT_HEADER_PREFIX.as_bytes()
-            );
+            let content =
+                fs::read(path).with_context(|| format!("failed to read file at {path}"))?;
+            let blob = Blob(content);
+            let sha1 = blob.sha1();
 
-            let content_size: usize =
-                String::from_utf8(header[OBJECT_HEADER_PREFIX.len()..].to_vec())
-                    .with_context(|| format!("failed to parse object file header as utf8"))?
-                    .parse()
-                    .with_context(|| format!("failed to parse object file header as integer"))?;
+            println!("{}", sha1);
 
-            assert_eq!(content.len(), content_size);
+            let object_folder = format!(".git/objects/{}", &sha1[..2]);
+            let object_path = format!("{}/{}", &object_folder, &sha1[2..]);
 
-            stdout.write_all(&content).with_context(|| {
-                format!("failed to write object file content to stdout for {blob_path}")
+            // println!("Object PATH {}", object_path);
+
+            if !Path::new(&object_folder).exists() {
+                fs::create_dir(&object_folder).with_context(|| {
+                    format!("failed to create object folder at {object_folder} for {path}")
+                })?;
+            } else if !fs::metadata(&object_folder)?.is_dir() {
+                return Err(anyhow!("object folder is not a directory: {object_folder}"));
+            }
+
+            let encoded = blob
+                .encode()
+                .with_context(|| format!("failed to encode object file for {path}"))?;
+
+            fs::write(&object_path, encoded).with_context(|| {
+                format!("failed to write object file at {object_path} for {path}")
             })?;
         }
         command => println!("unknown command: {}", command),
