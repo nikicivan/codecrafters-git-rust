@@ -1,5 +1,10 @@
 use anyhow::{anyhow, Context, Result};
-use git::{any_git_object::AnyGitObject, file_tree::FileTree, git_object_trait::GitObject};
+use git::{
+    any_git_object::AnyGitObject,
+    commits::{Commit, CommitActor},
+    file_tree::FileTree,
+    git_object_trait::GitObject,
+};
 use std::{
     env, fs,
     io::{stdout, Write},
@@ -94,6 +99,51 @@ fn main() -> Result<()> {
             );
 
             println!("{sha}");
+        }
+        "commit-tree" => {
+            let tree_hash_str = &args[2];
+            assert_eq!(args[3], "-p");
+            let parent_hash_str = &args[4];
+            assert_eq!(args[5], "-m");
+            let message = args[6..].join(" ");
+            #[cfg(debug_assertions)]
+            eprintln!("commit-tree {tree_hash_str} -p {parent_hash_str} -m {message}");
+
+            let tree_hash = hex::decode(tree_hash_str)
+                .with_context(|| "failed to decode tree sha")?
+                .try_into()
+                .map_err(|vec: Vec<_>| {
+                    anyhow!(
+                        "failed to convert tree sha: expected 20 bytes, got {}",
+                        vec.len()
+                    )
+                })?;
+
+            let parent_hash = Some(
+                hex::decode(parent_hash_str)
+                    .with_context(|| "failed to decode tree sha")?
+                    .try_into()
+                    .map_err(|vec: Vec<_>| {
+                        anyhow!(
+                            "failed to convert tree sha: expected 20 bytes, got {}",
+                            vec.len()
+                        )
+                    })?,
+            );
+
+            let mock_actor = CommitActor {
+                name: "John Doe".to_string(),
+                email: "john.doe@codecrafte.rs".to_string(),
+                epoch: 0,
+                timezone: "+0000".to_string(),
+            };
+
+            let commit = Commit::new(tree_hash, parent_hash, mock_actor, None, message);
+
+            commit
+                .write()
+                .with_context(|| "failed to write commit object")?;
+            println!("{}", hex::encode(commit.sha1()?));
         }
         command => println!("unknown command: {}", command),
     }

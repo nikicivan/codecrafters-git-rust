@@ -13,6 +13,8 @@ pub enum GitObjectType {
     Blob,
     #[strum(serialize = "tree")]
     Tree,
+    #[strum(serialize = "commit")]
+    Commit,
 }
 
 pub trait GitObject: Sized {

@@ -1,4 +1,5 @@
 pub mod any_git_object;
+pub mod commits;
 pub mod compression;
 pub mod file_tree;
 pub mod git_blob;

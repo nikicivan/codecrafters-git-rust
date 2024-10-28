@@ -1,5 +1,6 @@
 use crate::{
     git::{
+        commits::Commit,
         compression::decompress,
         file_tree::FileTree,
         git_blob::Blob,
@@ -8,7 +9,7 @@ use crate::{
     },
     utils::helpers::{from_utf8_with_context, get_object_file_path, parse_with_context},
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Ok, Result};
 use std::{fs, path::Path};
 use strum::EnumTryAs;
 
@@ -16,6 +17,7 @@ use strum::EnumTryAs;
 pub enum AnyGitObject {
     Blob(Blob),
     Tree(Tree),
+    Commit(Commit),
 }
 
 impl AnyGitObject {
@@ -87,6 +89,7 @@ impl AnyGitObject {
         match object_type {
             GitObjectType::Blob => Ok(Self::Blob(Blob::decode_body(content.to_vec())?)),
             GitObjectType::Tree => Ok(Self::Tree(Tree::decode_body(content.to_vec())?)),
+            GitObjectType::Commit => Ok(Self::Commit(Commit::decode_body(content.to_vec())?)),
         }
     }
 }
