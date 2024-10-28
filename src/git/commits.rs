@@ -1,13 +1,16 @@
 use crate::{
-    git::git_object_trait::{GitObject, GitObjectType},
-    utils::helpers::{from_utf8_with_context, parse_bytes_with_context},
+    git::{
+        any_git_object::Sha,
+        git_object_trait::{GitObject, GitObjectType},
+    },
+    utils::helpers::from_utf8_with_context,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Error, Result};
 use bytes::BufMut;
 use hex;
-use std::io::Write;
+use std::{io::Write, str::FromStr};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommitActor {
     pub name: String,
     pub email: String,
@@ -15,10 +18,54 @@ pub struct CommitActor {
     pub timezone: String,
 }
 
-#[derive(Debug)]
+impl FromStr for CommitActor {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let vec = s.split(' ').collect::<Vec<_>>();
+
+        let name = vec
+            .get(..vec.len() - 3)
+            .ok_or_else(|| {
+                anyhow!("failed to parse commit object file: failed to find author name")
+            })?
+            .join(" ");
+
+        let email = vec.get(vec.len() - 3).ok_or_else(|| {
+            anyhow!("failed to parse commit object file: failed to find author email")
+        })?;
+
+        let epoch = vec.get(vec.len() - 2).ok_or_else(|| {
+            anyhow!("failed to parse commit object file: failed to find author epoch")
+        })?;
+
+        let timezone = vec.get(vec.len() - 1).ok_or_else(|| {
+            anyhow!("failed to parse commit object file: failed to find author timezone")
+        })?;
+
+        if email.chars().next() != Some('<') || email.chars().last() != Some('>') {
+            return Err(anyhow!(
+                "failed to parse commit object file: expected author email to be enclosed in angle brackets"
+            ));
+        }
+
+        let email = &email[1..email.len() - 1];
+
+        Ok(CommitActor {
+            name: name.to_owned(),
+            email: email.to_owned(),
+            epoch: epoch.parse().with_context(|| {
+                format!("failed to parse commit object file: failed to parse author epoch")
+            })?,
+            timezone: timezone.to_string(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Commit {
-    tree_hash: [u8; 20],
-    parent_hash: Option<[u8; 20]>,
+    pub tree_hash: Sha,
+    pub parent_hash: Vec<Sha>,
     author: CommitActor,
     committer: Option<CommitActor>,
     commit_message: String,
@@ -30,7 +77,7 @@ impl GitObject for Commit {
 
         buf.write(format!("tree {}\n", hex::encode(&self.tree_hash)).as_bytes())?;
 
-        if let Some(ref parent_hash) = self.parent_hash {
+        for parent_hash in &self.parent_hash {
             buf.write(format!("parent {}\n", hex::encode(parent_hash)).as_bytes())?;
         }
 
@@ -43,6 +90,7 @@ impl GitObject for Commit {
         )?;
 
         let committer = self.committer.as_ref().unwrap_or(&self.author);
+
         buf.write(
             format!(
                 "committer {} <{}> {} {}\n",
@@ -50,7 +98,8 @@ impl GitObject for Commit {
             )
             .as_bytes(),
         )?;
-        buf.write(format!("\n{}\n", self.commit_message).as_bytes())?;
+
+        buf.write(format!("\n{}", self.commit_message).as_bytes())?;
 
         Ok(buf.into_inner())
     }
@@ -58,108 +107,91 @@ impl GitObject for Commit {
     fn decode_body(from: Vec<u8>) -> Result<Self> {
         let mut iter = from.into_iter().peekable();
 
-        assert_eq!(&iter.by_ref().take(5).collect::<Vec<_>>(), b"tree ");
-        let tree_hash = iter.by_ref().take(20).collect::<Vec<_>>().try_into().map_err(|_| {
-          anyhow!("failed to parse commit object file: expected tree hash to contain exactly 20 bytes")
-        })?;
-
-        assert_eq!(iter.by_ref().take(1).collect::<Vec<_>>(), b"\n");
-        assert_eq!(&iter.by_ref().take(7).collect::<Vec<_>>(), b"parent ");
-
-        let parent_hash = Some(iter.by_ref().take(20).collect::<Vec<_>>().try_into().map_err(|_| {
-          anyhow!("failed to parse commit object file: expected parent hash to contain exactly 20 bytes")
-        })?);
-
-        assert_eq!(iter.by_ref().take(1).collect::<Vec<_>>(), b"\n");
-        assert_eq!(&iter.by_ref().take(7).collect::<Vec<_>>(), b"author ");
-
-        let author_name =
-            from_utf8_with_context(iter.by_ref().take_while(|b| b != &b' ').collect())
-                .with_context(|| {
-                    format!("failed to parse commit object file: failed to parse author name")
-                })?;
-
-        let author_email = from_utf8_with_context(
-            iter.by_ref()
-                .skip_while(|b| b != &b'<')
-                .take_while(|b| b != &b'>')
-                .collect(),
-        )
+        let pairs = std::iter::from_fn({
+            let iter = &mut iter;
+            move || {
+                if iter.peek() == Some(&b'\n') {
+                    iter.next();
+                    None
+                } else {
+                    let iter = iter.by_ref();
+                    Some((|| -> Result<_> {
+                        let key = String::from_utf8(iter.take_while(|b| b != &b' ').collect())
+                            .with_context(|| {
+                                format!("failed to parse commit object file: failed to parse key")
+                            })?;
+                        let value = String::from_utf8(iter.take_while(|b| b != &b'\n').collect())
+                            .with_context(|| {
+                            format!("failed to parse commit object file: failed to parse value")
+                        })?;
+                        Ok((key, value))
+                    })())
+                }
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
         .with_context(|| {
-            format!("failed to parse commit object file: failed to parse author email")
+            format!("failed to parse commit object file: failed to parse key-value pairs")
         })?;
 
-        assert_eq!(iter.by_ref().take(1).collect::<Vec<_>>(), b" ");
-        let author_epoch =
-            parse_bytes_with_context(iter.by_ref().take_while(|b| b != &b' ').collect())
-                .with_context(|| {
-                    format!("failed to parse commit object file: failed to parse author epoch")
-                })?;
+        let tree_hash = Sha(pairs
+            .iter()
+            .find(|(k, _)| k == "tree")
+            .map(|(_, v)| -> Result<[u8; 20]> {
+                hex::decode(v).with_context(|| {
+                    format!("failed to parse commit object file: failed to parse tree hash: {v:#?}")
+                })?.try_into().map_err(|_| {
+                    anyhow!("failed to parse commit object file: expected tree hash to contain exactly 20 bytes")
+                })
+            })
+            .ok_or_else(|| anyhow!("failed to parse commit object file: failed to find tree hash"))??);
 
-        assert_eq!(iter.by_ref().take(1).collect::<Vec<_>>(), b" ");
-        let author_timezone =
-            from_utf8_with_context(iter.by_ref().take_while(|b| b != &b'\n').collect())
-                .with_context(|| {
-                    format!("failed to parse commit object file: failed to parse author timezone")
-                })?;
+        let parent_hashes = pairs
+            .iter()
+            .filter(|(k, _)| k == "parent")
+            .map(|(_, v)| -> Result<[u8; 20]> {
+                hex::decode(v).with_context(|| {
+                    format!("failed to parse commit object file: failed to parse parent hash: {v:#?}")
+                })?.try_into().map_err(|_| {
+                    anyhow!("failed to parse commit object file: expected parent hash to contain exactly 20 bytes")
+                })
+            })
+            .map(|arr| arr.map(Sha))
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| {
+                format!("failed to parse commit object file: failed to parse parent hashes")
+            })?;
 
-        assert_eq!(&iter.by_ref().take(10).collect::<Vec<_>>(), b"committer ");
+        let author = pairs
+            .iter()
+            .find(|(k, _)| k == "author")
+            .map(|(_k, v)| CommitActor::from_str(v))
+            .ok_or_else(|| {
+                anyhow!("failed to parse commit object file: failed to find author")
+            })??;
 
-        let committer_name =
-            from_utf8_with_context(iter.by_ref().take_while(|b| b != &b' ').collect())
-                .with_context(|| {
-                    format!("failed to parse commit object file: failed to parse committer name")
-                })?;
-
-        let committer_email = from_utf8_with_context(
-            iter.by_ref()
-                .skip_while(|b| b != &b'<')
-                .take_while(|b| b != &b'>')
-                .collect(),
-        )
-        .with_context(|| {
-            format!("failed to parse commit object file: failed to parse committer email")
-        })?;
-
-        assert_eq!(iter.by_ref().take(1).collect::<Vec<_>>(), b" ");
-
-        let committer_epoch =
-            parse_bytes_with_context(iter.by_ref().take_while(|b| b != &b' ').collect())
-                .with_context(|| {
-                    format!("failed to parse commit object file: failed to parse committer epoch")
-                })?;
-
-        let committer_timezone =
-            from_utf8_with_context(iter.by_ref().take_while(|b| b != &b'\n').collect())
-                .with_context(|| {
-                    format!(
-                        "failed to parse commit object file: failed to parse committer timezone"
-                    )
-                })?;
-
-        assert_eq!(iter.by_ref().take(1).collect::<Vec<_>>(), b"\n");
+        let committer = pairs
+            .iter()
+            .find(|(k, _)| k == "committer")
+            .map(|(_k, v)| CommitActor::from_str(v))
+            .transpose()
+            .with_context(|| {
+                anyhow!("failed to parse commit object file: failed to find committer")
+            })?;
 
         let commit_message = from_utf8_with_context(iter.collect()).with_context(|| {
             format!("failed to parse commit object file: failed to parse commit message")
         })?;
 
-        Ok(Commit {
+        let commit = Commit {
             tree_hash,
-            parent_hash,
-            author: CommitActor {
-                name: author_name,
-                email: author_email,
-                epoch: author_epoch,
-                timezone: author_timezone,
-            },
-            committer: Some(CommitActor {
-                name: committer_name,
-                email: committer_email,
-                epoch: committer_epoch,
-                timezone: committer_timezone,
-            }),
+            parent_hash: parent_hashes,
+            author,
+            committer,
             commit_message,
-        })
+        };
+
+        Ok(commit)
     }
 
     fn get_type() -> GitObjectType {
@@ -170,14 +202,14 @@ impl GitObject for Commit {
 impl Commit {
     pub fn new(
         tree_hash: [u8; 20],
-        parent_hash: Option<[u8; 20]>,
+        parent_hashes: Vec<[u8; 20]>,
         author: CommitActor,
         committer: Option<CommitActor>,
         commit_message: String,
     ) -> Self {
         Self {
-            tree_hash,
-            parent_hash,
+            tree_hash: tree_hash.into(),
+            parent_hash: parent_hashes.into_iter().map(Into::into).collect(),
             author,
             committer,
             commit_message,

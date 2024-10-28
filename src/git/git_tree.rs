@@ -1,5 +1,5 @@
 use crate::{
-    git::{git_object_trait::GitObject, git_object_trait::GitObjectType},
+    git::{any_git_object::Sha, git_object_trait::GitObject, git_object_trait::GitObjectType},
     utils::helpers::{from_utf8_with_context, parse_bytes_with_context},
 };
 use anyhow::{anyhow, Context, Result};
@@ -8,17 +8,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use strum::{AsRefStr, EnumString};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree(pub Vec<TreeEntry>);
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TreeEntry {
-    mode: FileMode,
+    pub mode: FileMode,
     pub name: String,
-    hash: [u8; 20],
+    pub hash: Sha,
 }
 
-#[derive(Debug, EnumString, AsRefStr)]
-enum FileMode {
+#[derive(Debug, EnumString, AsRefStr, Clone)]
+pub enum FileMode {
     #[strum(serialize = "100644")]
     Regular,
     #[strum(serialize = "100755")]
@@ -78,13 +78,17 @@ impl TreeEntry {
     fn decode<Iter: IntoIterator<Item = u8>>(iter: Iter) -> Result<Self> {
         let mut iter = iter.into_iter();
         let iter = iter.by_ref();
+
         let mode: FileMode = parse_bytes_with_context(iter.take_while(|b| b != &b' ').collect())
             .with_context(|| format!("failed to parse tree entry mode"))?;
+
         let name = from_utf8_with_context(iter.take_while(|b| b != &b'\0').collect())
             .with_context(|| format!("failed to parse tree entry name"))?;
-        let hash = iter.take(20).collect::<Vec<_>>().try_into().map_err(|_| {
+
+        let hash = Sha(iter.take(20).collect::<Vec<_>>().try_into().map_err(|_| {
             anyhow!("failed to parse tree entry sha1: expected it to contain exactly 20 bytes")
-        })?;
+        })?);
+
         Ok(Self { mode, name, hash })
     }
 
@@ -94,7 +98,7 @@ impl TreeEntry {
         encoded.push(b' ');
         encoded.extend_from_slice(self.name.as_bytes());
         encoded.push(b'\0');
-        encoded.extend_from_slice(&self.hash);
+        encoded.extend_from_slice(&self.hash.as_ref());
         encoded
     }
 }

@@ -9,12 +9,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileTree {
     entries: Vec<FileTreeNode>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum FileTreeNode {
     File(PathBuf),
     Directory(PathBuf, FileTree),
@@ -54,14 +54,15 @@ impl FileTree {
         Ok(Self { entries })
     }
 
-    pub fn write(&self) -> Result<Tree> {
-        self.parse_tree_object(true)
-    }
-    pub fn tree_object(&self) -> Result<Tree> {
-        self.parse_tree_object(false)
+    pub fn write<P: AsRef<Path>>(&self, path: P) -> Result<Tree> {
+        self.parse_tree_object(&Some(path))
     }
 
-    fn parse_tree_object(&self, should_write: bool) -> Result<Tree> {
+    pub fn tree_object(&self) -> Result<Tree> {
+        self.parse_tree_object::<&str>(&None)
+    }
+
+    fn parse_tree_object<P: AsRef<Path>>(&self, parent_path: &Option<P>) -> Result<Tree> {
         let entries = self
             .entries
             .iter()
@@ -70,8 +71,8 @@ impl FileTree {
                     let content = fs::read(path)
                         .with_context(|| format!("failed to read file at {path:?}"))?;
                     let blob = Blob::new(content);
-                    if should_write {
-                        blob.write().with_context(|| {
+                    if let Some(parent_path) = parent_path {
+                        blob.write(parent_path).with_context(|| {
                             format!("failed to write object file for blob from {path:?}")
                         })?;
                     }
@@ -80,7 +81,7 @@ impl FileTree {
                     })?)
                 }
                 FileTreeNode::Directory(path, tree) => {
-                    let tree_object = tree.parse_tree_object(should_write)?;
+                    let tree_object = tree.parse_tree_object(parent_path)?;
                     anyhow::Ok(TreeEntry::new(&tree_object, path).with_context(|| {
                         format!("failed to create tree entry for directory at {path:?}")
                     })?)
@@ -90,9 +91,9 @@ impl FileTree {
 
         let tree_object = Tree::new(entries);
 
-        if should_write {
+        if let Some(parent_path) = parent_path {
             tree_object
-                .write()
+                .write(parent_path)
                 .with_context(|| "failed to write tree object")?;
         }
         Ok(tree_object)

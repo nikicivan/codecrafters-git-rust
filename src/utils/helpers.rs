@@ -1,12 +1,17 @@
 use anyhow::{anyhow, Context, Result};
-use std::{path::PathBuf, str::FromStr};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
-pub fn get_object_folder_path(sha1: &str) -> PathBuf {
-    PathBuf::from(format!(".git/objects/{}", &sha1[..2]))
+pub fn get_object_folder_path<P: AsRef<Path>>(sha1: &str, path: P) -> PathBuf {
+    path.as_ref()
+        .to_path_buf()
+        .join(format!(".git/objects/{}", &sha1[..2]))
 }
 
-pub fn get_object_file_path(sha1: &str) -> PathBuf {
-    let mut path = get_object_folder_path(sha1);
+pub fn get_object_file_path<P: AsRef<Path>>(sha1: &str, path: P) -> PathBuf {
+    let mut path = get_object_folder_path(sha1, path);
     path.push(&sha1[2..]);
     path
 }
@@ -45,11 +50,11 @@ where
     from_utf8_with_context(input).and_then(|str| parse_with_context(&str))
 }
 
-pub fn into_single_bytes(value: [u32; 5]) -> Result<[u8; 20]> {
-    Ok(value
-        .into_iter()
-        .flat_map(|v| v.to_be_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .map_err(|_| anyhow!("unreachable: [u32; 5] couldn't be converted to [u8; 20]"))?)
-}
+// pub fn into_single_bytes(value: [u32; 5]) -> Result<[u8; 20]> {
+//     Ok(value
+//         .into_iter()
+//         .flat_map(|v| v.to_be_bytes())
+//         .collect::<Vec<_>>()
+//         .try_into()
+//         .map_err(|_| anyhow!("unreachable: [u32; 5] couldn't be converted to [u8; 20]"))?)
+// }

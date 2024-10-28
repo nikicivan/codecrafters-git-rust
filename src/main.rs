@@ -3,17 +3,21 @@ use git::{
     any_git_object::AnyGitObject,
     commits::{Commit, CommitActor},
     file_tree::FileTree,
+    git_client::GitClient,
     git_object_trait::GitObject,
 };
 use std::{
     env, fs,
     io::{stdout, Write},
+    path::Path,
 };
+use tokio;
 
 mod git;
 mod utils;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     let mut stdout = stdout();
@@ -30,7 +34,7 @@ fn main() -> Result<()> {
             assert_eq!(args[2], "-p");
             let blob_sha = &args[3];
 
-            let blob = AnyGitObject::read(blob_sha)
+            let blob = AnyGitObject::read(blob_sha, ".")
                 .with_context(|| format!("failed to read object file content for {blob_sha}"))?
                 .try_as_blob()
                 .ok_or_else(|| {
@@ -54,7 +58,7 @@ fn main() -> Result<()> {
                     anyhow!("failed to generate object file from {path}: expected it to be a blob")
                 })?;
 
-            blob.write()
+            blob.write(".")
                 .with_context(|| format!("failed to write object file for blob from {path}"))?;
 
             let sha = hex::encode(
@@ -69,7 +73,7 @@ fn main() -> Result<()> {
 
             let tree_sha = &args[3];
 
-            let tree = AnyGitObject::read(&tree_sha)
+            let tree = AnyGitObject::read(&tree_sha, ".")
                 .with_context(|| format!("failed to parse object file content for {tree_sha}"))?
                 .try_as_tree()
                 .ok_or_else(|| {
@@ -91,7 +95,7 @@ fn main() -> Result<()> {
             #[cfg(debug_assertions)]
             eprintln!("{:#?}", file_tree);
 
-            let tree_object = file_tree.write()?;
+            let tree_object = file_tree.write(".")?;
             let sha = hex::encode(
                 tree_object
                     .sha1()
@@ -119,17 +123,15 @@ fn main() -> Result<()> {
                     )
                 })?;
 
-            let parent_hash = Some(
-                hex::decode(parent_hash_str)
-                    .with_context(|| "failed to decode tree sha")?
-                    .try_into()
-                    .map_err(|vec: Vec<_>| {
-                        anyhow!(
-                            "failed to convert tree sha: expected 20 bytes, got {}",
-                            vec.len()
-                        )
-                    })?,
-            );
+            let parent_hash = hex::decode(parent_hash_str)
+                .with_context(|| "failed to decode tree sha")?
+                .try_into()
+                .map_err(|vec: Vec<_>| {
+                    anyhow!(
+                        "failed to convert tree sha: expected 20 bytes, got {}",
+                        vec.len()
+                    )
+                })?;
 
             let mock_actor = CommitActor {
                 name: "John Doe".to_string(),
@@ -138,12 +140,34 @@ fn main() -> Result<()> {
                 timezone: "+0000".to_string(),
             };
 
-            let commit = Commit::new(tree_hash, parent_hash, mock_actor, None, message);
+            let commit = Commit::new(
+                tree_hash,
+                vec![parent_hash],
+                mock_actor,
+                None,
+                format!("{}\n", message),
+            );
 
             commit
-                .write()
+                .write(".")
                 .with_context(|| "failed to write commit object")?;
             println!("{}", hex::encode(commit.sha1()?));
+        }
+        "clone" => {
+            let url = &args[2];
+            let dir_name = Path::new(&args[3]);
+            println!(
+                "cloning {url} into {:?}",
+                std::path::absolute(dir_name).unwrap()
+            );
+            assert!(!dir_name.exists(), "directory already exists");
+            fs::create_dir(&dir_name).with_context(|| "failed to create directory")?;
+            let client = GitClient::new(url).with_context(|| "failed to create GitClient")?;
+
+            client
+                .clone(&dir_name)
+                .await
+                .with_context(|| "failed to negotiate")?;
         }
         command => println!("unknown command: {}", command),
     }

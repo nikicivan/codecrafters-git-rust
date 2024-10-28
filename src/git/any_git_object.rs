@@ -13,22 +13,75 @@ use anyhow::{anyhow, Context, Ok, Result};
 use std::{fs, path::Path};
 use strum::EnumTryAs;
 
-#[derive(EnumTryAs, Debug)]
+#[derive(EnumTryAs, Debug, Clone)]
 pub enum AnyGitObject {
     Blob(Blob),
     Tree(Tree),
     Commit(Commit),
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Sha(pub [u8; 20]);
+impl From<[u8; 20]> for Sha {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+impl Into<[u8; 20]> for Sha {
+    fn into(self) -> [u8; 20] {
+        self.0
+    }
+}
+impl AsRef<[u8]> for Sha {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl std::fmt::Display for Sha {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", hex::encode(&self.0))
+    }
+}
+impl std::fmt::Debug for Sha {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Sha").field(&hex::encode(&self.0)).finish()
+    }
+}
+
 impl AnyGitObject {
-    pub fn read(sha: &str) -> Result<Self> {
-        let path = get_object_file_path(&sha);
+    pub fn read<P: AsRef<Path>>(sha: &str, path: P) -> Result<Self> {
+        let path = get_object_file_path(&sha, path);
 
         let raw_content =
             fs::read(&path).with_context(|| format!("failed to read object file at {path:?}"))?;
 
         AnyGitObject::decode(raw_content)
             .with_context(|| format!("failed to parse object file content for {path:?}"))
+    }
+
+    pub fn encode_body(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::Blob(blob) => blob.encode_body(),
+            Self::Tree(tree) => tree.encode_body(),
+            Self::Commit(commit) => commit.encode_body(),
+        }
+    }
+
+    pub fn write<P: AsRef<Path>>(&self, path: &P) -> Result<()> {
+        match self {
+            Self::Blob(blob) => blob.write(path),
+            Self::Tree(tree) => tree.write(path),
+            Self::Commit(commit) => commit.write(path),
+        }
+    }
+
+    pub fn sha1(&self) -> Result<Sha> {
+        match self {
+            Self::Blob(blob) => blob.sha1(),
+            Self::Tree(tree) => tree.sha1(),
+            Self::Commit(commit) => commit.sha1(),
+        }
     }
 
     pub fn generate<P: AsRef<Path>>(path: P) -> Result<Self> {

@@ -13,3 +13,6 @@ flate2 = "1.0.34"
 sha = "1.0.3"
 strum = { version = "0.26", features = ["derive"] }
 hex = "0.4"
+reqwest = "0.12.8"
+url = "2.5.2"
+tokio = { features = ["full"], version = "1.41.0" }
